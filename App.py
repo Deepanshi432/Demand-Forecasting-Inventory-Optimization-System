@@ -1,77 +1,121 @@
-import streamlit as st
-import sqlite3
+import os
+import joblib
 import pandas as pd
 import numpy as np
-import joblib
+import streamlit as st
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-st.set_page_config(page_title="Demand Forecast & Inventory Optimization", layout="wide")
+# Page Configuration
+st.set_page_config(
+    page_title="Demand Forecasting & Inventory Optimization",
+    page_icon="📦",
+    layout="wide"
+)
 
+# Asset Loading with Caching
 @st.cache_resource
 def load_assets():
-    model = joblib.load("xgboost_demand_model.pkl")
-    features = joblib.load("model_features.pkl")
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(base_dir, "xgboost_demand_model.pkl")
+    features_path = os.path.join(base_dir, "model_features.pkl")
+    
+    if not os.path.exists(model_path):
+        st.error("⚠️ Model file 'xgboost_demand_model.pkl' nahi mili. Pehle terminal par `python Train_forecaster.py` run karke model train karein.")
+        st.stop()
+        
+    model = joblib.load(model_path)
+    features = joblib.load(features_path)
     return model, features
 
+@st.cache_data
+def load_dataset():
+    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "processed_inventory_features.csv")
+    if os.path.exists(data_path):
+        df = pd.read_csv(data_path)
+        df['date'] = pd.to_datetime(df['date'])
+        return df
+    return None
+
+# Load Resources
 model, feature_cols = load_assets()
+df = load_dataset()
 
-def get_db_connection():
-    return sqlite3.connect("inventory_system.db")
+# Title & Dashboard Overview
+st.title("📦 Demand Forecasting & Inventory Optimization Dashboard")
+st.markdown("Predict product demand using trained XGBoost machine learning model and analyze historical trends.")
 
-# Header
-st.title("📦 End-to-End Demand Forecasting & Inventory Optimization System")
-st.markdown("---")
+# Sidebar Controls
+st.sidebar.header("🕹️ Controls & Inputs")
 
-# Sidebar - SKU Selection
-conn = get_db_connection()
-products_df = pd.read_sql_query("SELECT product_id, product_name FROM products", conn)
-inventory_df = pd.read_sql_query("SELECT * FROM inventory_targets", conn)
-conn.close()
+if df is not None:
+    available_products = df['product_id'].unique()
+    selected_product = st.sidebar.selectbox("Select Product ID", sorted(available_products))
+    
+    product_df = df[df['product_id'] == selected_product].sort_values('date')
+    latest_record = product_df.iloc[-1]
+    
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Adjust Feature Inputs")
+    
+    unit_cost = st.sidebar.number_input("Unit Cost (₹)", value=float(latest_record['unit_cost']))
+    unit_price = st.sidebar.number_input("Unit Price (₹)", value=float(latest_record['unit_price']))
+    lead_time = st.sidebar.number_input("Lead Time (Days)", value=int(latest_record['lead_time_days']))
+    lag_1 = st.sidebar.number_input("Lag 1 (Yesterday Sales)", value=float(latest_record['lag_1']))
+    lag_7 = st.sidebar.number_input("Lag 7 (Last Week Sales)", value=float(latest_record['lag_7']))
+    
+    # Prediction Generation
+    input_data = pd.DataFrame([{
+        'product_id': selected_product,
+        'unit_cost': unit_cost,
+        'unit_price': unit_price,
+        'lead_time_days': lead_time,
+        'day_of_week': latest_record['day_of_week'],
+        'day_of_month': latest_record['day_of_month'],
+        'month': latest_record['month'],
+        'quarter': latest_record['quarter'],
+        'is_weekend': latest_record['is_weekend'],
+        'lag_1': lag_1,
+        'lag_7': lag_7,
+        'lag_14': latest_record['lag_14'],
+        'lag_28': latest_record['lag_28'],
+        'rolling_mean_7': latest_record['rolling_mean_7'],
+        'rolling_std_7': latest_record['rolling_std_7'],
+        'rolling_mean_14': latest_record['rolling_mean_14'],
+        'rolling_std_14': latest_record['rolling_std_14'],
+        'rolling_mean_30': latest_record['rolling_mean_30'],
+        'rolling_std_30': latest_record['rolling_std_30']
+    }])[feature_cols]
 
-selected_product_name = st.sidebar.selectbox("Select Product SKU:", products_df['product_name'])
-selected_sku_id = products_df[products_df['product_name'] == selected_product_name]['product_id'].values[0]
+    prediction = np.maximum(0, model.predict(input_data)[0])
 
-# Retrieve Target Data
-sku_opt = inventory_df[inventory_df['product_id'] == selected_sku_id].iloc[0]
+    # Main Panel Metrics
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Predicted Daily Demand", f"{prediction:.1f} Units")
+    col2.metric("Unit Selling Price", f"₹{unit_price:.2f}")
+    col3.metric("Lead Time", f"{lead_time} Days")
 
-# Display Metrics Header
-col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("ABC/XYZ Segment", sku_opt['segment'])
-col2.metric("Avg Daily Demand", f"{sku_opt['avg_daily_demand']:.1f} units")
-col3.metric("Safety Stock Buffer", f"{int(sku_opt['safety_stock'])} units")
-col4.metric("Reorder Point (ROP)", f"{int(sku_opt['reorder_point'])} units")
-col5.metric("Economic Order Qty (EOQ)", f"{int(sku_opt['eoq'])} units")
+    st.markdown("---")
 
-st.markdown("---")
+    # Data Tabs
+    tab1, tab2, tab3 = st.tabs(["📊 Demand Trend", "📈 Historical Features", "🛠️ Model Info"])
 
-# Stock Status Simulator Interactive Control
-st.subheader("💡 Dynamic Reorder Trigger Simulator")
-sim_col1, sim_col2 = st.columns(2)
+    with tab1:
+        st.subheader(f"Historical Demand Trend for Product {selected_product}")
+        fig, ax = plt.subplots(figsize=(10, 4))
+        sns.lineplot(data=product_df, x='date', y='quantity_sold', ax=ax, label='Quantity Sold')
+        sns.lineplot(data=product_df, x='date', y='rolling_mean_7', ax=ax, label='7-Day Rolling Avg', linestyle='--')
+        ax.set_title("Sales History & Rolling Averages")
+        ax.set_ylabel("Units")
+        st.pyplot(fig)
 
-with sim_col1:
-    current_stock = st.number_input("Enter Current Warehouse Stock On-Hand:", min_value=0, value=int(sku_opt['reorder_point']) - 5)
+    with tab2:
+        st.subheader("Recent Processed Feature Data")
+        st.dataframe(product_df.tail(15), use_container_width=True)
 
-with sim_col2:
-    if current_stock <= sku_opt['reorder_point']:
-        st.error(f"⚠️ **ACTION REQUIRED**: Current stock ({current_stock}) is AT or BELOW Reorder Point ({int(sku_opt['reorder_point'])}). Issue Purchase Order for **{int(sku_opt['eoq'])} units** immediately!")
-    else:
-        st.success(f"✅ **STOCK HEALTHY**: Current stock ({current_stock}) is above Reorder Point ({int(sku_opt['reorder_point'])}). No order required.")
+    with tab3:
+        st.subheader("Features used by XGBoost Regressor")
+        st.json(feature_cols)
 
-# Historical vs Forecast Viz
-st.subheader(f"📈 30-Day Predictive Demand Forecast — {selected_product_name}")
-
-conn = get_db_connection()
-hist_sales = pd.read_sql_query(f"""
-    SELECT date, quantity_sold 
-    FROM sales 
-    WHERE product_id = {selected_sku_id} 
-    ORDER BY date DESC LIMIT 90
-""", conn)
-conn.close()
-
-hist_sales['date'] = pd.to_datetime(hist_sales['date'])
-hist_sales = hist_sales.sort_values(by='date')
-
-st.line_chart(hist_sales.set_index('date')['quantity_sold'], height=300)
-
-st.markdown("### Executive System Summary")
-st.dataframe(inventory_df[['product_name', 'category', 'avg_daily_demand', 'safety_stock', 'reorder_point', 'eoq', 'segment']])
+else:
+    st.warning("`processed_inventory_features.csv` file load nahi ho payi. Direct model inferencing features update karein.")
