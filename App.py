@@ -1,5 +1,5 @@
 import os
-import joblib
+import pickle
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -25,7 +25,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Asset Loading with Caching
+# Asset Loading using built-in pickle module
 @st.cache_resource
 def load_assets():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -36,8 +36,11 @@ def load_assets():
         st.error("⚠️ Model file 'xgboost_demand_model.pkl' nahi mili. Pehle terminal par `python Train_forecaster.py` run karke model train karein.")
         st.stop()
         
-    model = joblib.load(model_path)
-    features = joblib.load(features_path)
+    with open(model_path, "rb") as f:
+        model = pickle.load(f)
+    with open(features_path, "rb") as f:
+        features = pickle.load(f)
+        
     return model, features
 
 @st.cache_data
