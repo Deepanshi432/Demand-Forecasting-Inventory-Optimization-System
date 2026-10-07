@@ -13,6 +13,18 @@ st.set_page_config(
     layout="wide"
 )
 
+# Custom CSS styling for metric cards
+st.markdown("""
+    <style>
+    div[data-testid="stMetric"] {
+        background-color: #f8f9fa;
+        border: 1px solid #e9ecef;
+        padding: 15px;
+        border-radius: 10px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # Asset Loading with Caching
 @st.cache_resource
 def load_assets():
@@ -41,30 +53,34 @@ def load_dataset():
 model, feature_cols = load_assets()
 df = load_dataset()
 
-# Title & Dashboard Overview
-st.title("📦 Demand Forecasting & Inventory Optimization Dashboard")
-st.markdown("Predict product demand using trained XGBoost machine learning model and analyze historical trends.")
+# Title & Dashboard Header
+st.title("📦 Demand Forecasting & Inventory Optimization System")
+st.markdown("Real-time AI demand forecasting combined with Operations Research metrics (EOQ, Safety Stock, Reorder Point).")
 
 # Sidebar Controls
-st.sidebar.header("🕹️ Controls & Inputs")
+st.sidebar.header("🕹️ Control Panel")
 
 if df is not None:
     available_products = df['product_id'].unique()
-    selected_product = st.sidebar.selectbox("Select Product ID", sorted(available_products))
+    selected_product = st.sidebar.selectbox("Select SKU / Product ID", sorted(available_products))
     
     product_df = df[df['product_id'] == selected_product].sort_values('date')
     latest_record = product_df.iloc[-1]
     
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Adjust Feature Inputs")
+    st.sidebar.divider()
     
-    unit_cost = st.sidebar.number_input("Unit Cost (₹)", value=float(latest_record['unit_cost']))
-    unit_price = st.sidebar.number_input("Unit Price (₹)", value=float(latest_record['unit_price']))
-    lead_time = st.sidebar.number_input("Lead Time (Days)", value=int(latest_record['lead_time_days']))
-    lag_1 = st.sidebar.number_input("Lag 1 (Yesterday Sales)", value=float(latest_record['lag_1']))
-    lag_7 = st.sidebar.number_input("Lag 7 (Last Week Sales)", value=float(latest_record['lag_7']))
-    
-    # Prediction Generation
+    with st.sidebar.expander("💰 Cost & Lead Time Parameters", expanded=True):
+        unit_cost = st.number_input("Unit Cost (₹)", value=float(latest_record['unit_cost']), min_value=0.1)
+        unit_price = st.number_input("Unit Price (₹)", value=float(latest_record['unit_price']), min_value=0.1)
+        lead_time = st.number_input("Lead Time (Days)", value=int(latest_record['lead_time_days']), min_value=1)
+        ordering_cost = st.number_input("Ordering Cost / Order (₹)", value=50.0, min_value=1.0)
+        holding_cost_pct = st.slider("Annual Holding Cost (% of Cost)", min_value=5, max_value=50, value=20) / 100.0
+
+    with st.sidebar.expander("📊 Demand Lag Inputs", expanded=False):
+        lag_1 = st.number_input("Yesterday Sales (Lag 1)", value=float(latest_record['lag_1']), min_value=0.0)
+        lag_7 = st.number_input("Last Week Sales (Lag 7)", value=float(latest_record['lag_7']), min_value=0.0)
+
+    # Feature DataFrame for XGBoost Inference
     input_data = pd.DataFrame([{
         'product_id': selected_product,
         'unit_cost': unit_cost,
@@ -87,35 +103,60 @@ if df is not None:
         'rolling_std_30': latest_record['rolling_std_30']
     }])[feature_cols]
 
-    prediction = np.maximum(0, model.predict(input_data)[0])
+    # Model Prediction
+    predicted_demand = np.maximum(0, model.predict(input_data)[0])
 
-    # Main Panel Metrics
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Predicted Daily Demand", f"{prediction:.1f} Units")
-    col2.metric("Unit Selling Price", f"₹{unit_price:.2f}")
-    col3.metric("Lead Time", f"{lead_time} Days")
+    # Inventory Optimization Calculations
+    service_level_z = 1.65  # 95% service level standard
+    demand_std = product_df['quantity_sold'].std() if len(product_df) > 1 else 1.0
+    
+    safety_stock = int(np.ceil(service_level_z * demand_std * np.sqrt(lead_time)))
+    reorder_point = int(np.ceil((predicted_demand * lead_time) + safety_stock))
+    
+    annual_demand = predicted_demand * 365
+    annual_holding_cost = unit_cost * holding_cost_pct
+    eoq = int(np.ceil(np.sqrt((2 * annual_demand * ordering_cost) / annual_holding_cost))) if annual_holding_cost > 0 else 0
 
+    # Top KPI Section
+    st.subheader("💡 Key Operational Metrics & Demand Forecast")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Forecasted Demand", f"{predicted_demand:.1f} Units/Day")
+    c2.metric("Safety Stock", f"{safety_stock} Units")
+    c3.metric("Reorder Point (ROP)", f"{reorder_point} Units")
+    c4.metric("Optimal Batch (EOQ)", f"{eoq} Units")
+    c5.metric("Lead Time", f"{lead_time} Days")
+
+    # Automated Inventory Action Recommendation
     st.markdown("---")
+    st.subheader("📢 Automated Inventory Action Alert")
+    if lag_1 < reorder_point:
+        st.warning(f"⚠️ **Action Needed**: Current sales levels indicate inventory is approaching the **Reorder Point ({reorder_point} units)**. Place a fresh purchase order of **{eoq} units (EOQ)** to prevent stockouts during the {lead_time}-day lead time window.")
+    else:
+        st.success(f"✅ **Stock Level Healthy**: Current demand trends are well within safe operating limits. Next reorder trigger at **{reorder_point} units**.")
 
-    # Data Tabs
-    tab1, tab2, tab3 = st.tabs(["📊 Demand Trend", "📈 Historical Features", "🛠️ Model Info"])
+    # Visualizations Section
+    st.markdown("---")
+    tab1, tab2, tab3 = st.tabs(["📊 Demand Trends & Thresholds", "📈 Processed Historical Data", "🛠️ XGBoost Feature Mapping"])
 
     with tab1:
-        st.subheader(f"Historical Demand Trend for Product {selected_product}")
+        st.subheader(f"Historical Demand & Inventory Control Thresholds (Product: {selected_product})")
         fig, ax = plt.subplots(figsize=(10, 4))
-        sns.lineplot(data=product_df, x='date', y='quantity_sold', ax=ax, label='Quantity Sold')
-        sns.lineplot(data=product_df, x='date', y='rolling_mean_7', ax=ax, label='7-Day Rolling Avg', linestyle='--')
-        ax.set_title("Sales History & Rolling Averages")
+        sns.lineplot(data=product_df, x='date', y='quantity_sold', ax=ax, label='Daily Quantity Sold', color='#1f77b4')
+        sns.lineplot(data=product_df, x='date', y='rolling_mean_7', ax=ax, label='7-Day Rolling Avg Demand', linestyle='--', color='#ff7f0e')
+        ax.axhline(reorder_point, color='red', linestyle=':', label=f'Calculated Reorder Point ({reorder_point})')
+        ax.axhline(safety_stock, color='green', linestyle=':', label=f'Safety Stock ({safety_stock})')
         ax.set_ylabel("Units")
+        ax.set_title("Historical Demand vs Reorder & Safety Thresholds")
+        ax.legend(loc="upper right")
         st.pyplot(fig)
 
     with tab2:
-        st.subheader("Recent Processed Feature Data")
+        st.subheader("Recent Feature Vector Log")
         st.dataframe(product_df.tail(15), use_container_width=True)
 
     with tab3:
-        st.subheader("Features used by XGBoost Regressor")
+        st.subheader("XGBoost Regressor Input Features Vector")
         st.json(feature_cols)
 
 else:
-    st.warning("`processed_inventory_features.csv` file load nahi ho payi. Direct model inferencing features update karein.")
+    st.error("`processed_inventory_features.csv` dataset load nahi ho paya.")

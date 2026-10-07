@@ -1,0 +1,25 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Large Machine Learning Models & Serialized Objects
+*.pkl
+
+# Database & Processed Datasets
+*.db
+*.sqlite3
+processed_inventory_features.csv
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv/
+
+# Streamlit Local Cache
+.streamlit/
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
